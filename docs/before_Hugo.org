@@ -1,15 +1,571 @@
 #+TITLE: Job already done before Hugo (AKA: me) started
 #+AUTHOR: Hugo Ávila
-#+PROPERTY: header-args :results output replace
+#+PROPERTY: header-args :results output replace :dir ../
 * Git history
-** Create a modification/append list from `git log`
-This assumes a cronological order for adition/modification of files at the erk/phage repo.
-#+BEGIN_SRC shell
-# Get commit history, reverse it (older first) and send it to a file.
+** Create a modification list from `git log`
+This assumes a cronological order for addition of files in the erk/phage repo.
+#+BEGIN_SRC shell :results silent
+# Get commit history and reverse it (older first).
 git log \
     --abbrev-commit \
     --decorate \
     --format=format:'%C(yellow)%h%C(reset)%C(auto)%d%C(reset) %C(normal)%s%C(reset) %C(dim white)%an%C(reset) %C(dim blue)(%ar)%C(reset)' \
     --all \
-    --name-status | tac > commit_history.txt
+    --name-status | \
+    tac | \
+    grep -P 'A[^\w\d]' | \
+    cut -f2 | \
+    grep -Pv '^(\.|(READ))' | \
+    sed -r '/^scripts/! s#^#scripts/#' | \
+    parallel -k "[ -f {} ] && echo '*** {/}' && echo '#+BEGIN_SRC shell' && cat {} && echo '#+END_SRC' && echo" > docs/scripts_as_org_headers.txt
 #+END_SRC
+** Files
+Here I will go through all the scripts step by step, collecting all the tools used and adding some documentation so I know what is already being done. I will do this by importing all scripts as org headers
+#+BEGIN_SRC shell
+# This will print all scripts as org header in the current org file.
+cat docs/scripts_as_org_headers.txt
+#+END_SRC
+
+*** run_shasta.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+x=$1
+input=$2
+threads=$3
+simplify=$4
+readlength=$5
+hashiteration=$6
+
+time shasta --threads $threads \
+    --Align.minAlignedMarkerCount 10 \
+    --Reads.minReadLength $readlength \
+    --Kmers.k 10 \
+    --Kmers.probability 0.1 \
+    --MinHash.maxBucketSize 10 \
+    --MarkerGraph.minCoverage 100 \
+    --MarkerGraph.maxCoverage 100000000 \
+    --MarkerGraph.lowCoverageThreshold 10 \
+    --MarkerGraph.highCoverageThreshold 10000 \
+    --MarkerGraph.edgeMarkerSkipThreshold 100 \
+    --ReadGraph.maxAlignmentCount 6 \
+    --ReadGraph.minComponentSize 10 \
+    --MinHash.minHashIterationCount $hashiteration \
+    --MarkerGraph.pruneIterationCount 6 \
+    --MarkerGraph.simplifyMaxLength $simplify \
+    --input $input \
+    --assemblyDirectory $x
+
+#--memoryMode filesystem --memoryBacking 2M \
+#shasta --command cleanupBinaryData
+
+# calculate coverage
+#time minimap2 -t 32 -ax map-ont -r2k $x/Assembly.fasta $input \
+#    | sambamba view -f bam -S /dev/stdin >$x.unsrt.bam \
+#    && sambamba sort -o $x.bam $x.unsrt.bam \
+#    && rm -f $x.unsrt.bam{,.bai} \
+#    && samtools coverage $x.bam >$x.bam.coverage \
+#    && samtools depth -H -m 100000000 -a $x.bam | gzip >$x.bam.depth.tsv.gz
+#+END_SRC
+
+*** run_wtdbg2.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+in=$1
+out=$2
+gsize=$3
+threads=32
+
+# build the assembly
+
+wtdbg2 -g $gsize -i $in -t $threads -p 0 -k 15 -AS 1 -s 0.05 -L 500 -K 10000 -fo $out
+wtpoa-cns -t $threads -i $out.ctg.lay.gz -fo $out.raw.fa
+minimap2 -t $threads -ax map-ont -r2k $out.raw.fa $in | sambamba view -f bam -S /dev/stdin >$out.raw.bam
+sambamba sort -o $out.bam $out.raw.bam
+rm -f $out.raw.bam{,.bai}
+samtools view -F0x900 $out.bam | wtpoa-cns -t $threads -d $out.raw.fa -i - -fo $out.cns.fa
+rm -f $out.bam{,.bai}
+
+# map the reads back to it
+
+minimap2 -t $threads -ax map-ont -r2k $out.cns.fa $in  | sambamba view -f bam -S /dev/stdin >$out.unsrt.bam
+sambamba sort -o $out.bam $out.unsrt.bam
+rm -f $out.unsrt.bam{,.bai}
+
+# figure out the coverage distribution
+
+samtools coverage $out.bam >$out.bam.coverage
+#+END_SRC
+
+*** remove_ref.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+in=$1
+ref=$2
+out=$3
+
+minimap2 -t 32 -ax map-ont -r2k $ref $in | samtools view -h -f 4 - | samtools fastq - | pigz >$out
+#+END_SRC
+
+*** collect_phage_reads.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+in=$1
+phage=$2
+out=$3
+
+minimap2 -t 32 -ax map-ont -r2k $phage $in | samtools view -h -F 4 - | samtools fastq - | pigz >$out
+#+END_SRC
+
+*** collect_phage_reads.mq20.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+in=$1
+phage=$2
+out=$3
+
+minimap2 -t 32 -ax map-ont -r2k $phage $in | samtools view -h -q 20 - | samtools view -h -F 4 - | samtools fastq - | pigz >$out
+#+END_SRC
+
+*** odgi_prep.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+f=$1
+b=$(dirname $f)/$(basename $f .gfa)
+
+odgi build -g $f -o - | odgi sort -p bSnSn -t 4 -M -i - -o $b.odgi
+odgi view -i $b.odgi -g >$b.odgi.gfa
+odgi viz -i $b.odgi -o $b.odgi.png -P 3 -x 8000 -y 400
+odgi viz -i $b.odgi -o $b.odgi.R.png -R -P 3 -x 8000 -y 400
+odgi break -i $b.odgi -o - -c 100 -s 100 -u 10 >$b.break.odgi
+odgi view -i $b.break.odgi -g >$b.break.odgi.gfa
+
+vg view -Fv $b.break.odgi.gfa >$b.break.odgi.vg
+vg index -x $b.break.odgi.xg $b.break.odgi.vg
+
+
+
+
+#+END_SRC
+
+*** select_long_reads.awk
+#+BEGIN_SRC awk
+#!/usr/bin/awk -f
+
+BEGIN {
+    FS = "\t"
+    OFS = "\n"
+    MINLENGTH = ARGV[ARGC-1]
+    ARGC--
+}
+
+{
+    header = $0
+    getline seq
+    getline qheader
+    getline qseq
+    if (length(seq) >= MINLENGTH) {
+	print header, seq, qheader, qseq
+    }
+}
+
+#+END_SRC
+
+*** print_read_lengths.awk
+#+BEGIN_SRC awk
+#!/usr/bin/awk -f
+
+BEGIN {
+    FS = "\t"
+    OFS = "\n"
+}
+
+{
+    header = $0
+    getline seq
+    getline qheader
+    getline qseq
+    print length(seq)
+}
+
+#+END_SRC
+
+*** select_short_reads.awk
+#+BEGIN_SRC awk
+#!/usr/bin/awk -f
+
+BEGIN {
+    FS = "\t"
+    OFS = "\n"
+    MAXLENGTH = ARGV[ARGC-1]
+    ARGC--
+}
+
+{
+    header = $0
+    getline seq
+    getline qheader
+    getline qseq
+    if (length(seq) <= MAXLENGTH) {
+	print header, seq, qheader, qseq
+    }
+}
+
+#+END_SRC
+
+*** graphaligner.sh
+#+BEGIN_SRC shell
+#!/bin/bash
+
+f=$1
+
+#+END_SRC
+
+*** plot_gaffy_matrix.sh
+#+BEGIN_SRC shell
+#!/usr/bin/Rscript
+
+suppressPackageStartupMessages(
+    {
+        require(tidyverse)
+        require(ape)
+        require(phyclust)
+        require(ggfortify)
+        require(ggtree)
+    })
+
+args <- commandArgs(trailingOnly = TRUE)
+input=args[1]
+#keep_num=args[2]
+output=args[2]
+
+y <- read.delim(input)
+#x <- subset(x, node.count > 10) # only keep apparently informative reads
+#if (nrow(x) <= keep_num) {
+#y <- x
+#} else {
+#   y <- sample_n(x, keep_num)
+#}
+y.matrix <- y[ , !names(y) %in% c("group.name","aln.name","query.length","node.count")]
+y.dist <- dist(y.matrix)
+y.tree <- nj(y.dist)
+y.hclust <- hclust(y.dist)
+
+pdf(paste(output, "hclust.pdf", sep="."), height=8, width=8)
+plot(y.hclust)
+dev.off()
+
+ggplot(y.tree) + geom_tree()
+ggsave(paste(output, "tree.pdf", sep="."), height=8, width=8)
+
+.Color <- rainbow(13)[0:10]
+pdf(paste(output, "phylo.p.pdf", sep="."), height=40, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='p', main='phylogeny of 5-45kb nanopore reads for B1phi1 1st BL21\ncorrected against run1.B1phi1.i1 compressed assembly graph'); legend("bottomright", inset=0, title="Passage sample id", c(as.character(c(1:10))), fill=.Color, cex=0.8)
+dev.off()
+
+pdf(paste(output, "phylo.u.pdf", sep="."), height=9, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='u', main='phylogeny of 5-45kb nanopore reads for B1phi1 1st BL21\ncorrected against run1.B1phi1.i1 compressed assembly graph'); legend("topleft", inset=0, title="Passage sample id", c(as.character(c(1:10))), fill=.Color, cex=0.8)
+dev.off()
+
+y.pca <- prcomp(y.matrix)
+ggplot(y.pca$x, aes(x=PC1, y=PC2, color=group.name)) + geom_point()
+ggsave(paste(output, "pca.PC1.PC2.pdf", sep="."), height=8, width=9)
+ggplot(y.pca$x, aes(x=PC2, y=PC3, color=group.name)) + geom_point()
+ggsave(paste(output, "pca.PC2.PC3.pdf", sep="."), height=8, width=9)
+ggplot(y.pca$x, aes(x=PC3, y=PC4, color=group.name)) + geom_point()
+ggsave(paste(output, "pca.PC3.PC4.pdf", sep="."), height=8, width=9)
+ggplot(y.pca$x, aes(x=PC4, y=PC5, color=group.name)) + geom_point()
+ggsave(paste(output, "pca.PC4.PC5.pdf", sep="."), height=8, width=9)
+#+END_SRC
+
+*** plot_gaffy_matrix_P1-P10.sh
+#+BEGIN_SRC shell
+#!/usr/bin/Rscript
+
+suppressPackageStartupMessages(
+    {
+        require(tidyverse)
+        require(ape)
+        require(phyclust)
+        require(ggfortify)
+        require(ggtree)
+    })
+
+args <- commandArgs(trailingOnly = TRUE)
+input=args[1]
+#keep_num=args[2]
+output=args[2]
+
+y <- read.delim(input)
+# correct factor order
+y$group.name <- factor(as.character(y$group.name), levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"))
+
+#x <- subset(x, node.count > 10) # only keep apparently informative reads
+#if (nrow(x) <= keep_num) {
+#y <- x
+#} else {
+#   y <- sample_n(x, keep_num)
+#}
+ggplot(y, aes(x=query.length, color=group.name)) + geom_density() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "query.length.density.pdf", sep="."), height=6, width=10)
+ggplot(y, aes(x=query.length, fill=group.name)) + geom_histogram(binwidth=50) + scale_fill_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "query.length.hist.pdf", sep="."), height=6, width=10)
+
+y.matrix <- y[ , !names(y) %in% c("group.name","aln.name","query.length","node.count")]
+y.dist <- dist(y.matrix)
+y.tree <- nj(y.dist)
+y.hclust <- hclust(y.dist)
+
+pdf(paste(output, "hclust.pdf", sep="."), height=8, width=8)
+plot(y.hclust)
+dev.off()
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal") )) + aes(color=group.name) + geom_tree() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "ggtree.passage.pdf", sep="."), height=40, width=9)
+
+# takes forever
+#ggtree(y.tree, layout="unrooted") %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal") )) + aes(color=group.name) + geom_tree() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+#ggsave(paste(output, "ggtree.passage.unrooted.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), query.length=c(y$query.length,rep(0,nrow(y.tree$edge)-nrow(y)))) + aes(color=query.length) + geom_tree()
+ggsave(paste(output, "ggtree.query.length.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), node.count=c(y$node.count,rep(0,nrow(y.tree$edge)-nrow(y)))) + aes(color=node.count) + geom_tree()
+ggsave(paste(output, "ggtree.node.count.pdf", sep="."), height=40, width=9)
+
+.Color <- rainbow(12)[0:10]
+pdf(paste(output, "phylo.p.pdf", sep="."), height=40, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='p', main='nanopore reads corrected against assembly graph'); legend("bottomright", inset=0, title="Passage sample id", c(as.character(c(1:10))), fill=.Color, cex=0.8)
+dev.off()
+
+pdf(paste(output, "phylo.u.pdf", sep="."), height=9, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='u', main='nanopore reads corrected against assembly graph'); legend("topleft", inset=0, title="Passage sample id", c(as.character(c(1:10))), fill=.Color, cex=0.8)
+dev.off()
+
+y.pca <- prcomp(y.matrix)
+y.pca.df <- as.data.frame(y.pca$x)
+y.pca.df$group.name <- y$group.name
+ggplot(y.pca.df, aes(x=PC1, y=PC2, color=group.name)) + geom_point() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "pca.PC1.PC2.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC2, y=PC3, color=group.name)) + geom_point() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "pca.PC2.PC3.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC3, y=PC4, color=group.name)) + geom_point() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "pca.PC3.PC4.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC4, y=PC5, color=group.name)) + geom_point() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+ggsave(paste(output, "pca.PC4.PC5.pdf", sep="."), height=8, width=9)
+#+END_SRC
+
+*** plot_gaffy_vectorized_P1-P10.sh
+#+BEGIN_SRC shell
+#!/usr/bin/Rscript
+
+suppressPackageStartupMessages(
+    {
+        require(tidyverse)
+        require(ape)
+        require(phyclust)
+        require(ggfortify)
+        require(ggtree)
+    })
+
+args <- commandArgs(trailingOnly = TRUE)
+input=args[1]
+output=args[2]
+
+v <- read.delim(input)
+v$group.name <- factor(as.character(v$group.name), levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"))
+v$aln.id <- 1:nrow(v)
+
+ggplot(v, aes(y=aln.id, x=node.id, color=group.name)) + geom_tile() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_rect(fill = 'black', colour = 'black')) + scale_color_manual("passage",values=c(rainbow(12)[0:10]))
+ggsave(paste(output, "tile.group_name.black.pdf", sep="."), height=10, width=15)
+ggsave(paste(output, "tile.group_name.black.png", sep="."), height=10, width=15)
+
+ggplot(v, aes(y=query.length, x=node.id, color=group.name)) + geom_tile() +  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_rect(fill = 'black', colour = 'black')) + scale_color_manual("passage",values=c(rainbow(12)[0:10]))
+ggsave(paste(output, "tile.query_length.black.pdf", sep="."), height=10, width=15)
+ggsave(paste(output, "tile.query_length.black.png", sep="."), height=10, width=15)
+#+END_SRC
+
+*** plot_odgi_paths_matrix_P1-P10+evolved.sh
+#+BEGIN_SRC shell
+#!/usr/bin/Rscript
+
+suppressPackageStartupMessages(
+    {
+        require(tidyverse)
+        require(ape)
+        require(phyclust)
+        require(ggfortify)
+        require(ggtree)
+    })
+
+args <- commandArgs(trailingOnly = TRUE)
+input=args[1]
+#keep_num=args[2]
+output=args[2]
+
+y <- read.delim(input)
+# correct factor order
+y$group.name <- factor(as.character(y$group.name), levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "BL21_big", "BL21_small", "BL21_10", "LE_big", "LE_small", "LE_10"))
+
+#x <- subset(x, node.count > 10) # only keep apparently informative reads
+#if (nrow(x) <= keep_num) {
+#y <- x
+#} else {
+#   y <- sample_n(x, keep_num)
+#}
+colfunc <- colorRampPalette(c("red", "yellow"))
+phage.colors=c(colfunc(10), rainbow(8)[3:7])
+phage.colors[11] <- "#B6FF00"
+phage.colors[12] <- "#00FF7F"
+
+ggplot(y, aes(x=path.length, color=group.name)) + geom_density() + scale_color_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "path.length.density.pdf", sep="."), height=6, width=10)
+ggplot(y, aes(x=path.length, fill=group.name)) + geom_histogram(binwidth=50) + scale_fill_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "path.length.hist.pdf", sep="."), height=6, width=10)
+
+y.matrix <- y[ , !names(y) %in% c("group.name","path.name","path.length","node.count")]
+y.dist <- dist(y.matrix)
+y.tree <- nj(y.dist)
+y.hclust <- hclust(y.dist)
+
+pdf(paste(output, "hclust.pdf", sep="."), height=8, width=8)
+plot(y.hclust)
+dev.off()
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal") )) + aes(color=group.name) + geom_tree() + scale_color_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "ggtree.passage.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree, layout="daylight") %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal"))) + aes(color=group.name) + scale_color_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "ggtree.passage.daylight.pdf", sep="."), height=10, width=10)
+
+# takes forever
+#ggtree(y.tree, layout="unrooted") %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal") )) + aes(color=group.name) + geom_tree() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+#ggsave(paste(output, "ggtree.passage.unrooted.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), path.length=c(y$path.length,rep(0,nrow(y.tree$edge)-nrow(y)))) + aes(color=path.length) + geom_tree()
+ggsave(paste(output, "ggtree.path.length.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), node.count=c(y$node.count,rep(0,nrow(y.tree$edge)-nrow(y)))) + aes(color=node.count) + geom_tree()
+ggsave(paste(output, "ggtree.node.count.pdf", sep="."), height=40, width=9)
+
+.Color <- phage.colors #rainbow(12)[0:10]
+pdf(paste(output, "phylo.p.pdf", sep="."), height=40, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='p', main='nanopore reads corrected against assembly graph')
+legend("bottomright", inset=0, title="Passage sample id",
+       c(as.character(c(1:10)), "BL21_big", "BL21_10", "LE_big", "LE_small", "LE_10"), fill=.Color, cex=0.8)
+dev.off()
+
+pdf(paste(output, "phylo.u.pdf", sep="."), height=9, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='u', main='nanopore reads corrected against assembly graph')
+legend("bottomleft", inset=0, title="Passage sample id",
+       c(as.character(c(1:10)), "BL21_big", "BL21_10", "LE_big", "LE_small", "LE_10"), fill=.Color, cex=0.8)
+dev.off()
+
+y.pca <- prcomp(y.matrix)
+y.pca.df <- as.data.frame(y.pca$x)
+y.pca.df$group.name <- y$group.name
+ggplot(y.pca.df, aes(x=PC1, y=PC2, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC1.PC2.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC2, y=PC3, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC2.PC3.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC3, y=PC4, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC3.PC4.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC4, y=PC5, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC4.PC5.pdf", sep="."), height=8, width=9)
+#+END_SRC
+
+*** plot_gaffy_matrix_P1-P10+evolved.sh
+#+BEGIN_SRC shell
+#!/usr/bin/Rscript
+
+suppressPackageStartupMessages(
+    {
+        require(tidyverse)
+        require(ape)
+        require(phyclust)
+        require(ggfortify)
+        require(ggtree)
+    })
+
+args <- commandArgs(trailingOnly = TRUE)
+input=args[1]
+#keep_num=args[2]
+output=args[2]
+
+y <- read.delim(input)
+# correct factor order
+y$group.name <- factor(as.character(y$group.name), levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "BL21_big", "BL21_small", "BL21_10", "LE_big", "LE_small", "LE_10"))
+
+#x <- subset(x, node.count > 10) # only keep apparently informative reads
+#if (nrow(x) <= keep_num) {
+#y <- x
+#} else {
+#   y <- sample_n(x, keep_num)
+#}
+colfunc <- colorRampPalette(c("red", "yellow"))
+phage.colors=c(colfunc(10), rainbow(8)[3:7])
+
+ggplot(y, aes(x=query.length, color=group.name)) + geom_density() + scale_color_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "query.length.density.pdf", sep="."), height=6, width=10)
+ggplot(y, aes(x=query.length, fill=group.name)) + geom_histogram(binwidth=50) + scale_fill_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "query.length.hist.pdf", sep="."), height=6, width=10)
+
+y.matrix <- y[ , !names(y) %in% c("group.name","aln.name","query.length","node.count")]
+y.dist <- dist(y.matrix)
+y.tree <- nj(y.dist)
+y.hclust <- hclust(y.dist)
+
+pdf(paste(output, "hclust.pdf", sep="."), height=8, width=8)
+plot(y.hclust)
+dev.off()
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal") )) + aes(color=group.name) + geom_tree() + scale_color_manual("passage",values=c(phage.colors, "black"))
+ggsave(paste(output, "ggtree.passage.pdf", sep="."), height=40, width=9)
+
+# takes forever
+#ggtree(y.tree, layout="unrooted") %<+% data.frame(node=1:nrow(y.tree$edge), group.name=factor(c(as.character(y$group.name),rep("internal",nrow(y.tree$edge)-nrow(y))), levels=c(levels(y$group.name),"internal") )) + aes(color=group.name) + geom_tree() + scale_color_manual("passage",values=c(rainbow(12)[0:10], 'black'))
+#ggsave(paste(output, "ggtree.passage.unrooted.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), query.length=c(y$query.length,rep(0,nrow(y.tree$edge)-nrow(y)))) + aes(color=query.length) + geom_tree()
+ggsave(paste(output, "ggtree.query.length.pdf", sep="."), height=40, width=9)
+
+ggtree(y.tree) %<+% data.frame(node=1:nrow(y.tree$edge), node.count=c(y$node.count,rep(0,nrow(y.tree$edge)-nrow(y)))) + aes(color=node.count) + geom_tree()
+ggsave(paste(output, "ggtree.node.count.pdf", sep="."), height=40, width=9)
+
+.Color <- phage.colors #rainbow(12)[0:10]
+pdf(paste(output, "phylo.p.pdf", sep="."), height=40, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='p', main='nanopore reads corrected against assembly graph')
+legend("bottomright", inset=0, title="Passage sample id",
+       c(as.character(c(1:10)), "BL21_big", "BL21_10", "LE_big", "LE_small", "LE_10"), fill=.Color, cex=0.8)
+dev.off()
+
+pdf(paste(output, "phylo.u.pdf", sep="."), height=9, width=9)
+plotnj(y.tree, X.class=as.numeric(y$group.name), type='u', main='nanopore reads corrected against assembly graph')
+legend("bottomright", inset=0, title="Passage sample id",
+       c(as.character(c(1:10)), "BL21_big", "BL21_10", "LE_big", "LE_small", "LE_10"), fill=.Color, cex=0.8)
+dev.off()
+
+y.pca <- prcomp(y.matrix)
+y.pca.df <- as.data.frame(y.pca$x)
+y.pca.df$group.name <- y$group.name
+ggplot(y.pca.df, aes(x=PC1, y=PC2, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC1.PC2.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC2, y=PC3, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC2.PC3.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC3, y=PC4, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC3.PC4.pdf", sep="."), height=8, width=9)
+ggplot(y.pca.df, aes(x=PC4, y=PC5, color=group.name)) + geom_point() + scale_color_manual("passage",values=phage.colors)
+ggsave(paste(output, "pca.PC4.PC5.pdf", sep="."), height=8, width=9)
+#+END_SRC
+
+#+end_example
+
+
+* Tools used
+** Shasta
+** SAMTools
