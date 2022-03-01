@@ -1,0 +1,15 @@
+#+TITLE: Job already done before Hugo (AKA: me) started
+#+AUTHOR: Hugo Ávila
+#+PROPERTY: header-args :results output replace
+* Git history
+** Create a modification/append list from `git log`
+This assumes a cronological order for adition/modification of files at the erk/phage repo.
+#+BEGIN_SRC shell
+# Get commit history, reverse it (older first) and send it to a file.
+git log \
+    --abbrev-commit \
+    --decorate \
+    --format=format:'%C(yellow)%h%C(reset)%C(auto)%d%C(reset) %C(normal)%s%C(reset) %C(dim white)%an%C(reset) %C(dim blue)(%ar)%C(reset)' \
+    --all \
+    --name-status | tac > commit_history.txt
+#+END_SRC
