@@ -30,7 +30,7 @@ cat docs/scripts_as_org_headers.txt
 #+BEGIN_SRC shell
 #!/bin/bash
 
-x=$1
+x=$1 # this is probably the path for a dir containing assemblies.
 input=$2
 threads=$3
 simplify=$4
@@ -567,5 +567,17 @@ ggsave(paste(output, "pca.PC4.PC5.pdf", sep="."), height=8, width=9)
 
 
 * Tools used
-** Shasta
-** SAMTools
+- vg
+- odgi
+- pggb
+- shasta
+- samtools
+- minimap2
+- wtdbg2
+- wtpoa-cns
+- R lang
+  - tidyverse
+  - ape
+  - phyclust
+  - ggfortify
+  - ggtree
