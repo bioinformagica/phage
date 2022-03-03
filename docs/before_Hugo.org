@@ -1,6 +1,13 @@
 #+TITLE: Job already done before Hugo (AKA: me) started
 #+AUTHOR: Hugo Ávila
 #+PROPERTY: header-args :results output replace :dir ../
+
+* TOC :toc:
+- [[#git-history][Git history]]
+  - [[#create-a-modification-list-from-git-log][Create a modification list from `git log`]]
+  - [[#files][Files]]
+- [[#tools-used][Tools used]]
+
 * Git history
 ** Create a modification list from `git log`
 This assumes a cronological order for addition of files in the erk/phage repo.
