@@ -1,0 +1,37 @@
+#+TITLE: Guix Configuration
+#+AUTHOR: Hugo Ávila
+#+PROPERTY: header-args :dir ../
+To ensure reproducibility im going to create a guix environment with all [[file:before_Hugo.org::*Tools][tools already used in this project]]. I'm using a  Ubuntu (OS: Ubuntu 20.04.3 LTS x86_64) machine so i will built guix on top of it and then create the environment.
+* Install Guix
+Install and configure guix on top of Ubuntu:
+#+BEGIN_SRC shell
+wget --quiet  -O '/tmp/guix-install.sh' 'https://git.savannah.gnu.org/cgit/guix.git/plain/etc/guix-install.sh'
+chmod +x '/tmp/guix-install'
+sudo '/tmp/guix-install.sh'
+
+# Update guix (This will take a while, go drink a cup of tea).
+guix pull
+
+# save your current .profile
+cp ~/.profile ~/.profile.bak
+
+# Configure guix env
+echo 'GUIX_PROFILE="${HOME}/.config/guix/current"' >> ~/.profile
+echo '. "${GUIX_PROFILE}/etc/profile"' >> ~/.profile
+
+# Install glibc-utf8-locales
+guix install glibc-utf8-locales
+echo 'export GUIX_LOCPATH="${HOME}/.guix-profile/lib/locale"' >> ~/.profile
+
+# << Restart your teminal >>
+#+END_SRC
+
+#+BEGIN_SRC shell
+# Check if all went well
+hash guix
+type guix
+
+#+END_SRC
+
+#+RESULTS:
+: guix is hashed (/usr/local/bin/guix)
