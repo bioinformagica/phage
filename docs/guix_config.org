@@ -1,6 +1,7 @@
 #+TITLE: Guix Configuration
 #+AUTHOR: Hugo Ávila
 #+PROPERTY: header-args :dir ../
+#+EXPORT_FILE_NAME: /tmp/guix_setup.html
 To ensure reproducibility im going to create a guix environment with all [[file:before_Hugo.org::*Tools][tools already used in this project]]. I'm using a  Ubuntu (OS: Ubuntu 20.04.3 LTS x86_64) machine so i will built guix on top of it and then create the environment.
 * Install Guix
 Install and configure guix on top of Ubuntu:
@@ -26,12 +27,12 @@ echo 'export GUIX_LOCPATH="${HOME}/.guix-profile/lib/locale"' >> ~/.profile
 # << Restart your teminal >>
 #+END_SRC
 
-#+BEGIN_SRC shell
-# Check if all went well
+Check if all went well, your output should look like that:
+#+BEGIN_SRC shell :exports both :results verbatim replace
 hash guix
 type guix
-
 #+END_SRC
 
 #+RESULTS:
-: guix is hashed (/usr/local/bin/guix)
+: guix is hashed (/home/YOUR-USER/.config/guix/current/bin/guix)
+* Creating and environment
