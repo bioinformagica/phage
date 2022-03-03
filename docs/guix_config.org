@@ -36,3 +36,4 @@ type guix
 #+RESULTS:
 : guix is hashed (/home/YOUR-USER/.config/guix/current/bin/guix)
 * Creating and environment
+vim
